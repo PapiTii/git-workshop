@@ -1,2 +1,3 @@
 Tiago Correia
 Olá! Este é o meu primeiro ficheiro no workshop de Git.
+teste 1
