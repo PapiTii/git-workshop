@@ -166,16 +166,20 @@ def filtro_de(nome):
 CARDIO = re.compile(r"\b(?:run(?:ning)?|jog(?:ging)?|sprint|cycl(?:e|ing)|bike|row(?:ing)? machine|"
                     r"jump(?:ing)? jacks?|burpees?|skipping|jump rope|treadmill|elliptical|swim(?:ming)?)\b", re.I)
 COMPOSTO = re.compile(r"\b(?:squats?|deadlifts?|bench press|press(?:es)?|rows?|pull[- ]?ups?|chin[- ]?ups?|"
-                      r"push[- ]?ups?|dips?|lunges?|cleans?|snatch|thrusters?|step[- ]?ups?|hip thrusts?)\b", re.I)
+                      r"push[- ]?ups?|dips?|lunges?|cleans?|snatch|thrusters?|step[- ]?ups?|hip thrusts?|swings?|"
+                      r"pull[- ]?downs?|high pulls?|ohp|good mornings?|roll[- ]?outs?)\b", re.I)
 ISOLADO = re.compile(r"\b(?:curls?|raises?|fl(?:y|ies|yes)|extensions?|kickbacks?|shrugs?|crunch(?:es)?|"
-                     r"pullovers?|pushdowns?|calf|wrist)\b", re.I)
+                     r"pull[- ]?overs?|pushdowns?|calf|wrist|butterfly|pec deck|triceps? press|skull ?crushers?)\b", re.I)
+# Alongamentos, yoga e posições estáticas não são treino de força: ficam em "other".
+OUTRO = re.compile(r"\b(?:stretch(?:es|ing)?|yoga|mobility|holds?|circles?)\b", re.I)
 
 
 def tipo_esforco(ex):
     """compound / isolated / cardio / other, por esta ordem de regras:
 
     1. categoria Cardio, ou palavra de cardio no nome → cardio
-    2. palavra de exercício isolado no NOME → isolated   (ex.: "Leg Curl")
+       alongamento, yoga ou posição estática no nome → other
+    2. palavra de exercício isolado no NOME → isolated   (ex.: "Leg Curl", "Calf Press")
     3. palavra de exercício composto no NOME → compound  (ex.: "Barbell Row")
     4. 3 ou mais músculos envolvidos → compound (mexe várias articulações)
     5. 1 só músculo → isolated
@@ -191,6 +195,8 @@ def tipo_esforco(ex):
 
     if ex["category"]["name"] == "Cardio" or CARDIO.search(nome):
         return "cardio"
+    if OUTRO.search(nome):
+        return "other"
     if ISOLADO.search(nome):
         return "isolated"
     if COMPOSTO.search(nome):
@@ -271,7 +277,10 @@ def search(
     filtros = filtro_de(termo)
     if categoria:
         filtros.update(filtro_de(categoria))
-    escrever_json([resumo(ex) for ex in exercicios(filtros, n)])
+    resultados = [resumo(ex) for ex in exercicios(filtros, n)]
+    if not resultados:  # vai para o stderr, para não estragar o JSON
+        typer.echo(f"Sem resultados para '{termo}'" + (f" com a categoria '{categoria}'." if categoria else "."), err=True)
+    escrever_json(resultados)
 
 
 @app.command("type")
@@ -342,4 +351,5 @@ def grupos():
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")  # para os acentos saírem bem no terminal do Windows
+    sys.stderr.reconfigure(encoding="utf-8")  # e também nas mensagens de erro
     app()
