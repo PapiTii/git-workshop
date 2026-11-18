@@ -19,7 +19,7 @@ pip install -r requirements.txt
 | c) | `python fitcli.py type 91` | Tipo de esforço: `compound`, `isolated`, `cardio` ou `other` |
 | d) | `python fitcli.py equipment chest` | Menções a equipamento nas descrições de uma categoria, da mais frequente para a menos |
 | e) | `python fitcli.py workout biceps,back compound 5` | Plano de treino por grupo muscular |
-| e) | `python fitcli.py workout chest,shoulders isolated 3 --csv treino.csv` | O mesmo, exportado para CSV |
+| e) | `python fitcli.py workout chest,shoulders isolated 3 --csv treino.csv` | O mesmo, exportado para CSV (separador `;`, abre direto no Excel) |
 | extra | `python fitcli.py grupos` | Lista os músculos e as categorias aceites |
 
 `python fitcli.py --help` e `python fitcli.py <comando> --help` mostram a ajuda.

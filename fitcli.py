@@ -16,6 +16,8 @@ import html
 import json
 import re
 import sys
+from enum import Enum
+from functools import lru_cache
 
 import requests
 import typer
@@ -30,12 +32,15 @@ INGLES = 2  # id da língua inglesa na wger
 
 app = typer.Typer(help="Pesquisa exercícios físicos na API wger.")
 
+sessao = requests.Session()  # reaproveita a mesma ligação em todos os pedidos
+sessao.headers.update(CABECALHOS)
+
 
 def pedido(rota, params=None):
     """Faz um GET à API e devolve o JSON. Pára o programa se o status não for 200."""
     url = rota if rota.startswith("http") else BASE + rota
     try:
-        r = requests.get(url, params=params, headers=CABECALHOS, timeout=20)
+        r = sessao.get(url, params=params, timeout=20)
     except requests.RequestException as erro:
         typer.echo(f"Erro de ligação à API: {erro}", err=True)
         raise typer.Exit(1)
@@ -90,10 +95,9 @@ def musculos(ex):
 
 def resumo(ex):
     """O dicionário que se mostra ao utilizador."""
-    t = traducao_inglesa(ex)
     return {
         "id": ex["id"],
-        "name": t["name"],
+        "name": ex["_en"]["name"],
         "category": ex["category"]["name"],
         "equipment": [e["name"] for e in ex["equipment"]],
         "muscles": musculos(ex),
@@ -106,8 +110,10 @@ def exercicios(params, maximo=None):
     params = {"language": INGLES, "limit": limite, **params}
     contados = 0
     for ex in paginas("exerciseinfo/", params):
-        if traducao_inglesa(ex) is None:  # há exercícios só noutras línguas
+        t = traducao_inglesa(ex)
+        if t is None:  # há exercícios só noutras línguas
             continue
+        ex["_en"] = t  # calculada uma vez; resumo e tipo_esforco usam ex["_en"]
         yield ex
         contados += 1
         if maximo is not None and contados >= maximo:
@@ -117,6 +123,16 @@ def exercicios(params, maximo=None):
 # ---------------------------------------------------------------------------
 # 3. Músculos e categorias: converter o nome escrito num filtro da API
 # ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=None)  # cada lista é pedida à API uma só vez por execução
+def lista_musculos():
+    return pedido("muscle/", {"limit": 100})["results"]
+
+
+@lru_cache(maxsize=None)
+def lista_categorias():
+    return pedido("exercisecategory/")["results"]
+
 
 def normalizar(s):
     return re.sub(r"[^a-z]", "", s.lower())  # "Biceps brachii" → "bicepsbrachii"
@@ -128,14 +144,14 @@ def filtro_de(nome):
     alvo = normalizar(nome)
     if not alvo:  # "123" fica vazio, e "" iria corresponder a qualquer músculo
         raise erro
-    for c in pedido("exercisecategory/")["results"]:
+    for c in lista_categorias():
         if normalizar(c["name"]) == alvo:
             return {"category": c["id"]}
-    for m in pedido("muscle/", {"limit": 100})["results"]:
+    for m in lista_musculos():
         if alvo in (normalizar(m["name"]), normalizar(m["name_en"] or "")):
             return {"muscles": m["id"]}
     # sem correspondência exata: aceita o início do nome ("pector" → Pectoralis major)
-    for m in pedido("muscle/", {"limit": 100})["results"]:
+    for m in lista_musculos():
         if normalizar(m["name"]).startswith(alvo) or normalizar(m["name_en"] or "").startswith(alvo):
             return {"muscles": m["id"]}
     raise erro
@@ -170,8 +186,7 @@ def tipo_esforco(ex):
     "press" ou "row" aparecem em frases normais. Consequência: a descrição só
     decide quando o exercício tem 0 ou 2 músculos.
     """
-    t = traducao_inglesa(ex)
-    nome, descricao = t["name"], limpar_html(t["description"])
+    nome, descricao = ex["_en"]["name"], limpar_html(ex["_en"]["description"])
     n_musculos = len(ex["muscles"]) + len(ex["muscles_secondary"])
 
     if ex["category"]["name"] == "Cardio" or CARDIO.search(nome):
@@ -230,6 +245,12 @@ def contar_equipamento(textos):
 # 6. Comandos da CLI
 # ---------------------------------------------------------------------------
 
+class Esforco(str, Enum):
+    compound = "compound"
+    isolated = "isolated"
+    any = "any"
+
+
 def escrever_json(dados):
     typer.echo(json.dumps(dados, ensure_ascii=False, indent=2))
 
@@ -257,7 +278,8 @@ def search(
 def tipo(exercise_id: int = typer.Argument(..., help="O id do exercício (ver no 'top' ou no 'search')")):
     """c) Tipo de esforço de um exercício: compound, isolated, cardio ou other."""
     ex = pedido(f"exerciseinfo/{exercise_id}/")
-    if traducao_inglesa(ex) is None:
+    ex["_en"] = traducao_inglesa(ex)
+    if ex["_en"] is None:
         typer.echo("Este exercício não tem versão em inglês.", err=True)
         raise typer.Exit(1)
     typer.echo(tipo_esforco(ex))
@@ -269,28 +291,24 @@ def equipment(categoria: str = typer.Argument(..., help="Categoria (abs, arms, b
     filtros = filtro_de(categoria)
     if "category" not in filtros:
         raise typer.BadParameter(f"'{categoria}' é um músculo; aqui é preciso uma categoria.")
-    textos = [limpar_html(traducao_inglesa(ex)["description"]) for ex in exercicios(filtros)]
+    textos = [limpar_html(ex["_en"]["description"]) for ex in exercicios(filtros)]
     escrever_json(contar_equipamento(textos))
 
 
 @app.command()
 def workout(
-    grupos: str = typer.Argument(..., help="Músculos ou categorias separados por vírgula (ex.: biceps,back)"),
-    esforco: str = typer.Argument("any", help="compound, isolated ou any"),
+    lista: str = typer.Argument(..., help="Músculos ou categorias separados por vírgula (ex.: biceps,back)"),
+    esforco: Esforco = typer.Argument(Esforco.any, case_sensitive=False, help="Tipo de esforço"),
     n: int = typer.Argument(5, min=1, help="Máximo de exercícios por grupo"),
     csv_saida: str = typer.Option(None, "--csv", help="Exportar o plano para este ficheiro CSV"),
 ):
     """e) Plano de treino: junta o search, o type e o equipment."""
-    esforco = esforco.lower()
-    if esforco not in ("compound", "isolated", "any"):
-        raise typer.BadParameter("O esforço tem de ser compound, isolated ou any.")
-
     plano = {}
-    for grupo in [g.strip() for g in grupos.split(",") if g.strip()]:
+    for grupo in [g.strip() for g in lista.split(",") if g.strip()]:
         escolhidos = []
         for ex in exercicios(filtro_de(grupo)):
             t = tipo_esforco(ex)
-            if esforco == "any" or t == esforco:
+            if esforco == Esforco.any or t == esforco.value:
                 escolhidos.append({**resumo(ex), "type": t})
             if len(escolhidos) == n:
                 break
@@ -300,13 +318,13 @@ def workout(
 
     if csv_saida:
         linhas = 0
-        with open(csv_saida, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
+        with open(csv_saida, "w", newline="", encoding="utf-8-sig") as f:  # utf-8-sig: o Excel lê bem os acentos
+            w = csv.writer(f, delimiter=";")  # o Excel português usa ;
             w.writerow(["group", "id", "name", "type", "category", "equipment", "muscles"])
             for grupo, lista in plano.items():
                 for e in lista:
                     w.writerow([grupo, e["id"], e["name"], e["type"], e["category"],
-                                "; ".join(e["equipment"]), "; ".join(e["muscles"])])
+                                ", ".join(e["equipment"]), ", ".join(e["muscles"])])
                     linhas += 1
         typer.echo(f"Ficheiro exportado: {csv_saida} ({linhas} registos)")
     else:
@@ -317,8 +335,8 @@ def workout(
 def grupos():
     """Extra: mostra os músculos e as categorias que se podem usar."""
     escrever_json({
-        "categorias": [c["name"].lower() for c in pedido("exercisecategory/")["results"]],
-        "musculos": [(m["name_en"] or m["name"]).lower() for m in pedido("muscle/", {"limit": 100})["results"]],
+        "categorias": [c["name"].lower() for c in lista_categorias()],
+        "musculos": [(m["name_en"] or m["name"]).lower() for m in lista_musculos()],
     })
 
 
